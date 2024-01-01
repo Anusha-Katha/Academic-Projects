@@ -1,0 +1,113 @@
+clc
+clear all;
+close all;
+%% Parameter declaration according to project
+Nfft = 1024;
+Ncp = 128;
+Nsym = 6;
+FreqOffset = 0.25;
+SNRdb = 15;
+theta = 256;
+%% OFDM symbol generation
+data = 2*randi([0 1],1, Nsym*Nfft)-1; % QPSK data
+ Tx = zeros(1,Nsym*(Nfft+Ncp));
+OFDMsym = zeros(1,Nfft); 
+for sym = 1:Nsym
+  OFDMsym = ifft(data(Nfft*(sym-1)+1:(Nfft*sym)),Nfft)*sqrt(Nfft);
+  Tx((Nfft+Ncp)*(sym-1)+1:(Nfft+Ncp)*sym) = [OFDMsym(Nfft-Ncp+1:Nfft) OFDMsym];
+end
+ %% AWGN channel
+snr = 10^(-SNRdb/10);
+noise = sqrt(snr/2)*(randn(1,Nsym*(Nfft+Ncp))+1i*randn(1,Nsym*(Nfft+Ncp)));
+Rx = exp(1i*2*pi*FreqOffset*(0:length(Tx)-1)./Nfft).*Tx + noise; 
+ %% CFO estimation of timing and frequency offset
+PHI_sum = zeros(1,Nsym*(Nfft+Ncp)-Nfft);
+GM_sum = zeros(1,Nsym*(Nfft+Ncp)-Nfft);
+ for n = theta:Nsym*(Nfft+Ncp)-(Nfft+Ncp)
+  PHI=0;GM=0;
+  for m = n:n+Ncp-1  
+  PHI = PHI+ (Rx(m)*conj(Rx(m)) + Rx(m+Nfft)*conj(Rx(m+Nfft)));
+  GM = GM+ Rx(m)*conj(Rx(m+Nfft));  
+  end
+  PHI_sum(n) = abs(GM)- (snr/(snr+1))*PHI;
+  GM_sum(n) = -angle(GM)/(2*pi);
+end
+ %% Estimation results display
+ clear all;
+ nCP = 8;%round(Tcp/Ts);
+nFFT = 64; 
+NT = nFFT + nCP;
+F = dftmtx(nFFT)/sqrt(nFFT);
+ MC = 1500;
+ EsNodB = 0:5:40;
+snr = 10.^(EsNodB/10);
+beta = 17/9;
+M = 16;
+modObj = modem.qammod(M);
+demodObj = modem.qamdemod(M);
+L = 5;
+ChEstLS = zeros(1,length(EsNodB));
+ChEstMMSE = zeros(1,length(EsNodB));
+TD_ChEstMMSE = zeros(1,length(EsNodB));
+TDD_ChEstMMSE = zeros(1,length(EsNodB));
+TDQabs_ChEstMMSE = zeros(1,length(EsNodB));
+ for ii = 1:length(EsNodB)
+  disp('EsN0dB is :'); disp(EsNodB(ii));tic;
+  ChMSE_LS = 0;
+  ChMSE_LMMSE=0; 
+  TDMSE_LMMSE =0;
+  TDDMSE_LMMSE=0;
+  TDQabsMSE_LMMSE =0;
+  for mc = 1:MC
+% Random channel taps
+g = randn(L,1)+1i*randn(L,1);
+  g = g/norm(g);
+  H = fft(g,nFFT);
+% generation of symbol
+X = randi([0 M-1],nFFT,1); %BPSK symbols
+  XD = modulate(modObj,X)/sqrt(10); % normalizing symbol power
+  x = F'*XD;
+  xout = [x(nFFT-nCP+1:nFFT);x];  
+% channel convolution and AWGN
+y = conv(xout,g);
+  nt =randn(nFFT+nCP+L-1,1) + 1i*randn(nFFT+nCP+L-1,1);
+  No = 10^(-EsNodB(ii)/10);
+  y = y + sqrt(No/2)*nt;
+% Receiver processing
+ y = y(nCP+1:NT);
+  Y = F*y;
+% frequency doimain LS channel estimation 
+HhatLS = Y./XD; 
+  ChMSE_LS = ChMSE_LS + ((H -HhatLS)'*(H-HhatLS))/nFFT;
+% Frequency domain LMMSE estimation
+Rhh = H*H';
+  W = Rhh/(Rhh+(beta/snr(ii))*eye(nFFT));
+  HhatLMMSE = W*HhatLS;
+  ChMSE_LMMSE = ChMSE_LMMSE + ((H -HhatLMMSE)'*(H-HhatLMMSE))/nFFT; 
+  % Time domain LMMSE estimation
+ ghatLS = ifft(HhatLS,nFFT);
+  Rgg = g*g';
+  WW = Rgg/(Rgg+(beta/snr(ii))*eye(L));
+  ghat = WW*ghatLS(1:L);
+  TD_HhatLMMSE = fft(ghat,nFFT);%  
+  TDMSE_LMMSE=TDMSE_LMMSE+((H-TD_HhatLMMSE)'*(H-TD_HhatLMMSE))/nFFT;  
+  % Time domain LMMSE estimation - ignoring channel covariance
+ghatLS = ifft(HhatLS,nFFT);
+  Rgg = diag(g.*conj(g));
+  WW = Rgg/(Rgg+(beta/snr(ii))*eye(L));
+  ghat = WW*ghatLS(1:L);
+  TDD_HhatLMMSE = fft(ghat,nFFT);%  
+  TDDMSE_LMMSE=TDDMSE_LMMSE+((HTDD_HhatLMMSE)'*(HTDD_HhatLMMSE))/nFFT;  
+ % Time domain LMMSE estimation - ignoring smoothing matrix
+ghatLS = ifft(HhatLS,nFFT);
+TDQabs_HhatLMMSE = fft(ghat,nFFT);%  
+TDQabsMSE_LMMSE=TDQabsMSE_LMMSE+((HTDQabs_HhatLMMSE)'*(HTDQabs_HhatLMMSE))/nFFT;  
+end
+ChEstLS(ii) = ChMSE_LS/MC;
+  ChEstMMSE(ii)=ChMSE_LMMSE/MC;
+  TD_ChEstMMSE(ii)=TDMSE_LMMSE/MC;
+  TDD_ChEstMMSE(ii)=TDMSE_LMMSE/MC;
+  TDQabs_ChEstMMSE(ii)=TDQabsMSE_LMMSE/MC;
+  toc;
+end
+ 
